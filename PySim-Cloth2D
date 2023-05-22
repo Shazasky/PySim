@@ -1,1 +1,446 @@
+import pygame
+import math
+import threading
+import pygame_gui
+import os
+import multiprocessing
 
+# Set the environment variable to enable CPU utilization
+os.environ["OMP_NUM_THREADS"] = str(multiprocessing.cpu_count())
+
+# Pygame initialization
+pygame.init()
+clock = pygame.time.Clock()
+screen = pygame.display.set_mode((1280, 720))
+pygame.display.set_caption("PySim2D - Cloth Simulation - 2D Physics Engine, made in pygame")
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GRAY = (128, 128, 128)
+RED = (255, 0, 0)
+
+# Cloth settings
+physics_accuracy = 1  # Initial physics accuracy
+mouse_influence = 20
+mouse_cut = 5
+gravity = 1200
+cloth_height = 30
+cloth_width = 50
+start_x = 20
+start_y = 20
+spacing = 7
+tear_distance = 60
+original_tear_distance = tear_distance
+
+# Min and Max Slider Values
+physics_accuracy_min_slider = 1  # Min value for Physics Accuracy slider
+physics_accuracy_max_slider = 25  # Max value for Physics Accuracy slider
+
+mouse_influence_min_slider = 1  # Min value for Mouse Influence slider
+mouse_influence_max_slider = 50  # Max value for Mouse Influence slider
+
+mouse_cut_min_slider = 1  # Min value for Mouse Cut slider
+mouse_cut_max_slider = 40  # Max value for Mouse Cut slider
+
+gravity_min_slider = -500  # Min value for Gravity slider
+gravity_max_slider = 2000  # Max value for Gravity slider
+
+cloth_height_min_slider = 1  # Min value for Cloth Height slider
+cloth_height_max_slider = 100  # Max value for Cloth Height slider
+
+cloth_width_min_slider = 1  # Min value for Cloth Width slider
+cloth_width_max_slider = 200  # Max value for Cloth Width slider
+
+start_x_min_slider = 0  # Min value for Start X slider
+start_x_max_slider = 100  # Max value for Start X slider
+
+start_y_min_slider = 0  # Min value for Start Y slider
+start_y_max_slider = 250  # Max value for Start Y slider
+
+spacing_min_slider = 2  # Min value for Spacing slider
+spacing_max_slider = 20  # Max value for Spacing slider
+
+tear_distance_min_slider = 20  # Min value for Tear Distance slider
+tear_distance_max_slider = 250  # Max value for Tear Distance slider
+
+# Point class
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.px = x
+        self.py = y
+        self.vx = 0
+        self.vy = 0
+        self.pin_x = None
+        self.pin_y = None
+        self.constraints = []
+
+    def update(self, delta):
+        if mouse['down']:
+            diff_x = self.x - mouse['x']
+            diff_y = self.y - mouse['y']
+            dist = math.sqrt(diff_x * diff_x + diff_y * diff_y)
+
+            if mouse['button'] == 1:
+                if dist < mouse_influence:
+                    self.px = self.x - (mouse['x']- mouse['px']) * 1.8
+                    self.py = self.y - (mouse['y'] - mouse['py']) * 1.8
+            elif dist < mouse_cut:
+                self.constraints = []
+
+        self.add_force(0, gravity)
+
+        delta *= delta
+        nx = self.x + ((self.x - self.px) * 0.99) + ((self.vx / 2) * delta)
+        ny = self.y + ((self.y - self.py) * 0.99) + ((self.vy / 2) * delta)
+
+        self.px = self.x
+        self.py = self.y
+
+        self.x = nx
+        self.y = ny
+
+        self.vx = self.vy = 0
+
+    def draw(self, point_mode):
+        if point_mode:
+            pygame.draw.circle(screen, GRAY, (int(self.x), int(self.y)), 3)
+        else:
+            if not self.constraints:
+                return
+            for constraint in self.constraints:
+                pygame.draw.line(screen, WHITE, (constraint.p1.x, constraint.p1.y), (constraint.p2.x, constraint.p2.y), 1)
+
+    def resolve_constraints(self):
+        if self.pin_x is not None and self.pin_y is not None:
+            self.x = self.pin_x
+            self.y = self.pin_y
+            return
+
+        for constraint in self.constraints:
+            constraint.resolve()
+
+        if self.x > boundsx:
+            self.x = 2 * boundsx - self.x
+        elif self.x < 1:
+            self.x = 2 - self.x
+
+        if self.y < 1:
+            self.y = 2 - self.y
+        elif self.y > boundsy:
+            self.y = 2 * boundsy - self.y
+
+    def attach(self, point):
+        self.constraints.append(Constraint(self, point))
+
+    def remove_constraint(self, constraint):
+        self.constraints.remove(constraint)
+
+    def add_force(self, x, y):
+        self.vx += x
+        self.vy += y
+
+        round_val = 400
+        self.vx = int(self.vx * round_val) / round_val
+        self.vy = int(self.vy * round_val) / round_val
+
+    def pin(self, pinx, piny):
+        self.pin_x = pinx
+        self.pin_y = piny
+
+
+# Constraint class
+class Constraint:
+    def __init__(self, p1, p2):
+        self.p1 = p1
+        self.p2 = p2
+        self.length = spacing
+
+    def resolve(self):
+        diff_x = self.p1.x - self.p2.x
+        diff_y = self.p1.y - self.p2.y
+        dist = math.sqrt(diff_x * diff_x + diff_y * diff_y)
+        diff = (self.length - dist) / dist
+
+        if dist > tear_distance:
+            self.p1.remove_constraint(self)
+
+        px = diff_x * diff * 0.5
+        py = diff_y * diff * 0.5
+
+        self.p1.x += px
+        self.p1.y += py
+        self.p2.x -= px
+        self.p2.y -= py
+
+    def draw(self):
+        pygame.draw.line(screen, WHITE, (self.p1.x, self.p1.y), (self.p2.x, self.p2.y), 1)
+
+
+# Cloth class
+class Cloth:
+    def __init__(self):
+        self.points = []
+        self.reset_cloth()
+
+    def reset_cloth(self):
+        self.points.clear()
+
+        start_x = screen.get_width() // 2 - cloth_width * spacing // 2
+
+        for y in range(cloth_height + 1):
+            for x in range(cloth_width + 1):
+                p = Point(start_x + x * spacing, start_y + y * spacing)
+
+                if x != 0:
+                    p.attach(self.points[-1])
+                if y == 0:
+                    p.pin(p.x, p.y)
+                if y != 0:
+                    p.attach(self.points[x + (y - 1) * (cloth_width + 1)])
+
+                self.points.append(p)
+
+    def update(self):
+        for _ in range(physics_accuracy):
+            for point in self.points:
+                point.resolve_constraints()
+
+        for point in self.points:
+            point.update(0.016)
+
+    def draw(self, point_mode):
+        for point in self.points:
+            point.draw(point_mode)
+
+
+# Mouse dictionary
+mouse = {
+    'down': False,
+    'button': 1,
+    'x': 0,
+    'y': 0,
+    'px': 0,
+    'py': 0
+}
+
+# Bounds initialization
+boundsx = screen.get_width() - 1
+boundsy = screen.get_height() - 1
+
+# Cloth initialization
+cloth = Cloth()
+
+# Point mode flag
+point_mode = False
+
+# Drag ripping flag
+drag_ripping = False
+
+# Pygame GUI manager
+manager = pygame_gui.UIManager((1280, 720))
+
+# Font for labels
+font = pygame.font.Font(None, 20)
+big_font = pygame.font.Font(None, 36)
+
+# Define the initial coordinates for the setting labels
+label_x = 1000  # X-coordinate for the labels
+label_y = 40   # Y-coordinate for the first label
+
+# Create sliders for cloth settings
+settings_labels = [
+    'Quality: Physics Accuracy',
+    'Radius of Mouse: Mouse Influence',
+    'Radius of Cut: Mouse Cut',
+    'Self-Explanatory: Gravity',
+    'Height Of Cloth: Cloth Height',
+    'Width of Cloth: Cloth Width',
+    'Start X: Start X',
+    'Start Y: Start Y',
+    'Size of Cloth Cell: Spacing',
+    'How Much Cloth Has To Be Stretched To Tear: Tear Distance'
+]
+settings_values = [
+    physics_accuracy, mouse_influence, mouse_cut, gravity, cloth_height,
+    cloth_width, start_x, start_y, spacing, tear_distance
+]
+min_slider_values = [
+    physics_accuracy_min_slider, mouse_influence_min_slider, mouse_cut_min_slider,
+    gravity_min_slider, cloth_height_min_slider, cloth_width_min_slider,
+    start_x_min_slider, start_y_min_slider, spacing_min_slider, tear_distance_min_slider
+]
+max_slider_values = [
+    physics_accuracy_max_slider, mouse_influence_max_slider, mouse_cut_max_slider,
+    gravity_max_slider, cloth_height_max_slider, cloth_width_max_slider,
+    start_x_max_slider, start_y_max_slider, spacing_max_slider, tear_distance_max_slider
+]
+sliders = []
+slider_labels = []
+labels = []
+
+# Create "Reset Scene" button
+reset_button_size = (180, 40)
+reset_button_position = (screen.get_width() - reset_button_size[0] - 10, screen.get_height() - reset_button_size[1] - 10)
+reset_button = pygame_gui.elements.UIButton(
+    relative_rect=pygame.Rect(reset_button_position, reset_button_size),
+    text="Reset Scene",
+    manager=manager
+)
+
+# FPS counter
+fps_font = pygame.font.Font(None, 24)
+
+# FPS calculation variables
+fps_update_interval = 1.0
+fps_update_timer = 0.0
+frame_count = 0
+fps = 0
+
+# Credit text
+credit_font = pygame.font.Font(None, 64)
+credit_text = "Made By @Shazasky"
+credit_text_surface = credit_font.render(credit_text, True, WHITE)
+credit_position = (10, screen.get_height() - credit_text_surface.get_height() - 10)
+
+for i in range(len(settings_labels)):
+    label = settings_labels[i]
+    value = settings_values[i]
+    min_value = min_slider_values[i]
+    max_value = max_slider_values[i]
+
+    # Create a slider for each cloth setting
+    slider_y = 640 - (len(settings_labels) - i) * 40
+    slider_rect = pygame.Rect(1000, slider_y, 200, 20)
+    slider = pygame_gui.elements.UIHorizontalSlider(
+        relative_rect=slider_rect,
+        start_value=value,
+        value_range=(min_value, max_value),
+        manager=manager
+    )
+    sliders.append(slider)
+
+    # Create a label for the cloth setting
+    setting_label = font.render(f"{label}:", True, WHITE)
+    setting_label_rect = setting_label.get_rect(topright=(label_x, slider_y))
+    slider_labels.append((setting_label, setting_label_rect))
+
+    # Create a label for the slider value
+    value_label = font.render(str(value), True, WHITE)
+    value_rect = value_label.get_rect(midleft=(slider_rect.right + 10, slider_rect.centery))
+    labels.append((value_label, value_rect))
+
+# Main game loop
+running = True
+hide_ui = False
+while running:
+    time_delta = clock.tick(30) / 1000.0
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        # Process all GUI events
+        manager.process_events(event)
+
+        # Handle mouse events for cloth interaction
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse['button'] = event.button
+            mouse['px'], mouse['py'] = mouse['x'], mouse['y']
+            mouse['x'], mouse['y'] = event.pos
+            mouse['down'] = True
+        elif event.type == pygame.MOUSEBUTTONUP:
+            mouse['down'] = False
+        elif event.type == pygame.MOUSEMOTION:
+            mouse['px'], mouse['py'] = mouse['x'], mouse['y']
+            mouse['x'], mouse['y'] = event.pos
+
+        # Handle slider value changes
+        if event.type == pygame.USEREVENT and event.ui_element in sliders:
+            # Find the index of the slider that triggered the event
+            slider_index = sliders.index(event.ui_element)
+
+            # Update the corresponding cloth setting value
+            settings_values[slider_index] = int(event.ui_element.get_current_value())
+
+            # Update the label for the slider value
+            value_label = font.render(str(int(event.ui_element.get_current_value())), True, WHITE)
+            value_rect = value_label.get_rect(midleft=(event.ui_element.rect.right + 10, event.ui_element.rect.centery))
+            labels[slider_index] = (value_label, value_rect)
+
+            # Update the cloth settings based on the updated values
+            physics_accuracy = settings_values[0]
+            mouse_influence = settings_values[1]
+            mouse_cut = settings_values[2]
+            gravity = settings_values[3]
+            cloth_height = settings_values[4]
+            cloth_width = settings_values[5]
+            start_x = settings_values[6]
+            start_y = settings_values[7]
+            spacing = settings_values[8]
+            tear_distance = settings_values[9]
+            cloth.reset_cloth()
+
+        # Handle "Reset Scene" button click
+        if event.type == pygame.USEREVENT and event.ui_element == reset_button:
+            cloth.reset_cloth()
+
+        # Handle hiding/showing UI with 'H' key press
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_h:
+                hide_ui = not hide_ui
+
+        # Handle toggling point mode with 'P' key press
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_p:
+                point_mode = not point_mode
+
+        # Handle toggling tear distance with 'T' key press
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_t:
+                if tear_distance == original_tear_distance:
+                    tear_distance = 1000
+                else:
+                    tear_distance = original_tear_distance
+
+    # Update cloth
+    cloth.update()
+
+    # Update GUI
+    if not hide_ui:
+        manager.update(time_delta)
+
+    # Drawing
+    screen.fill(BLACK)
+    cloth.draw(point_mode)
+
+    if not hide_ui:
+        # Draw sliders and labels
+        for i in range(len(sliders)):
+            screen.blit(slider_labels[i][0], slider_labels[i][1])
+            screen.blit(labels[i][0], labels[i][1])
+
+        # Draw "Reset Scene" button
+        reset_button.update(time_delta)
+        manager.draw_ui(screen)
+
+    # FPS counter
+    frame_count += 1
+    fps_update_timer += time_delta
+    if fps_update_timer >= fps_update_interval:
+        fps = frame_count / fps_update_timer
+        frame_count = 0
+        fps_update_timer = 0
+
+    fps_text = fps_font.render(f"FPS: {fps:.2f}", True, WHITE)
+    screen.blit(fps_text, (10, 10))
+
+    # Credit
+    screen.blit(credit_text_surface, credit_position)
+
+    pygame.display.flip()
+
+# Quit the game
+pygame.quit()
